@@ -117,6 +117,7 @@ struct ParsecView: View
 	@State var muted: Bool = false
 	@State var preferH265: Bool = true
 	@State var constantFps = false
+	@State var scrollWheelOnLeft: Bool = false
 	
 	@State var resolutions: [ParsecResolution]
 	@State var bitrates: [Int]
@@ -144,6 +145,7 @@ struct ParsecView: View
 		_muted = State(initialValue: save ? SettingsHandler.savedMuted : false)
 		_zoomEnabled = State(initialValue: save ? SettingsHandler.savedZoomEnabled : false)
 		_constantFps = State(initialValue: save ? SettingsHandler.savedConstantFps : false)
+		_scrollWheelOnLeft = State(initialValue: SettingsHandler.scrollWheelOnLeft)
 		_resolutions = State(initialValue: ParsecResolution.resolutions)
 		_bitrates = State(initialValue: ParsecResolution.bitrates)
 
@@ -160,7 +162,6 @@ struct ParsecView: View
 			
 			UIViewControllerWrapper(self.parsecViewController)
 				.zIndex(1)
-				.prefersPersistentSystemOverlaysHidden()
 			
 			ParsecStatusBar(showMenu: $showMenu, showDCAlert: $showDCAlert, DCAlertText: $DCAlertText, parsecViewController: parsecViewController)
 			
@@ -300,6 +301,13 @@ struct ParsecView: View
 									.frame(maxWidth:.infinity)
 									.multilineTextAlignment(.center)
 							}
+							Button(action: toggleScrollWheelSide)
+							{
+								Text("Scroll Wheel: \(scrollWheelOnLeft ? "LEFT" : "RIGHT")")
+									.padding(8)
+									.frame(maxWidth:.infinity)
+									.multilineTextAlignment(.center)
+							}
 							Rectangle()
 								.fill(Color("Foreground"))
 								.opacity(0.25)
@@ -325,8 +333,14 @@ struct ParsecView: View
 				Spacer()
 			}
 			.zIndex(2)
+
+			if !hideOverlay {
+				ScrollWheelOverlay()
+					.zIndex(3)
+			}
 		}
 		.statusBarHidden(SettingsHandler.hideStatusBar)
+		.prefersPersistentSystemOverlaysHidden()
 		.alert(isPresented:$showDCAlert)
 		{
 			Alert(title: Text(DCAlertText), dismissButton:.default(Text("Close"), action:{disconnect()}))
@@ -504,6 +518,13 @@ struct ParsecView: View
 		}
 	}
 	
+	func toggleScrollWheelSide() {
+		DispatchQueue.main.async {
+			scrollWheelOnLeft.toggle()
+			SettingsHandler.scrollWheelOnLeft = scrollWheelOnLeft
+		}
+	}
+
 	func toggleZoom() {
 		DispatchQueue.main.async {
 			zoomEnabled.toggle()
@@ -525,6 +546,131 @@ struct ParsecView: View
 		CParsec.sendUserData(type: .getAdapterInfo, message: data)
 	}
 
+}
+
+struct ScrollWheelOverlay: View {
+	@State private var lastDragY: CGFloat? = nil
+	@State private var flickTimer: Timer? = nil
+	@State private var keyboardHeight: CGFloat = 0
+	@State private var safeTop: CGFloat = 0
+	@State private var safeBottom: CGFloat = 0
+	@State private var safeTrailing: CGFloat = 0
+	@State private var safeLeading: CGFloat = 0
+	@AppStorage("scrollWheelOnLeft") private var scrollWheelOnLeft: Bool = false
+
+	var body: some View {
+		HStack {
+			if !scrollWheelOnLeft {
+				Spacer()
+			}
+			VStack {
+				Spacer()
+				ZStack {
+					RoundedRectangle(cornerRadius: 14)
+						.fill(Color("BackgroundPrompt").opacity(0.5))
+					VStack {
+						Image(systemName: "chevron.up")
+						Spacer()
+						Image(systemName: "line.3.horizontal")
+						Spacer()
+						Image(systemName: "chevron.down")
+					}
+					.padding(.vertical, 18)
+					.foregroundColor(Color("Foreground"))
+					.font(.system(size: 16))
+				}
+				.frame(width: 56, height: 260)
+				.contentShape(Rectangle())
+				.gesture(
+					DragGesture(minimumDistance: 0)
+						.onChanged { value in
+							flickTimer?.invalidate()
+							flickTimer = nil
+							if let last = lastDragY {
+								let delta = value.location.y - last
+								let wheelDelta = Int32(delta * 4)
+								if wheelDelta != 0 {
+									sendNudge()
+									CParsec.sendWheelMsg(x: 0, y: wheelDelta)
+								}
+							}
+							lastDragY = value.location.y
+						}
+						.onEnded { value in
+							lastDragY = nil
+							let further = value.predictedEndTranslation.height - value.translation.height
+							let flickVelocity = further / 0.4
+							if abs(flickVelocity) > 200 {
+								startFlick(initialVelocity: flickVelocity)
+							}
+						}
+				)
+				Spacer()
+			}
+			if scrollWheelOnLeft {
+				Spacer()
+			}
+		}
+		.padding(.top, safeTop + 8)
+		.padding(.bottom, safeBottom + 8 + keyboardHeight)
+		.padding(.leading, scrollWheelOnLeft ? safeLeading + 8 : 0)
+		.padding(.trailing, scrollWheelOnLeft ? 0 : safeTrailing + 8)
+		.onAppear(perform: refreshInsets)
+		.onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+			DispatchQueue.main.async { refreshInsets() }
+		}
+		.onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+			if let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue {
+				withAnimation(.easeInOut(duration: 0.25)) {
+					keyboardHeight = frame.height
+				}
+			}
+		}
+		.onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+			withAnimation(.easeInOut(duration: 0.25)) {
+				keyboardHeight = 0
+			}
+		}
+	}
+
+	private func sendNudge() {
+		if SettingsHandler.cursorMode == .direct {
+			CParsec.sendMousePosition(CParsec.mouseInfo.mouseX, CParsec.mouseInfo.mouseY)
+		} else {
+			CParsec.sendMouseDelta(0, 0)
+		}
+	}
+
+	private func startFlick(initialVelocity: CGFloat) {
+		var velocity = initialVelocity * 1.5
+		flickTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { timer in
+			velocity *= 0.97
+			if abs(velocity) < 30 {
+				timer.invalidate()
+				flickTimer = nil
+				return
+			}
+			let frameDelta = velocity / 60.0
+			let wheelDelta = Int32(frameDelta * 8)
+			if wheelDelta != 0 {
+				sendNudge()
+				CParsec.sendWheelMsg(x: 0, y: wheelDelta)
+			}
+		}
+	}
+
+	private func refreshInsets() {
+		guard let window = UIApplication.shared.connectedScenes
+			.compactMap({ $0 as? UIWindowScene })
+			.first?.windows.first(where: { $0.isKeyWindow }) ?? UIApplication.shared.connectedScenes
+				.compactMap({ $0 as? UIWindowScene })
+				.first?.windows.first else { return }
+		let insets = window.safeAreaInsets
+		safeTop = insets.top
+		safeBottom = insets.bottom
+		safeTrailing = insets.right
+		safeLeading = insets.left
+	}
 }
 
 // from https://github.com/utmapp/UTM/blob/117e3a962f2f46f7d847632d65fa7a85a2bb0cfa/Platform/iOS/VMWindowView.swift#L314

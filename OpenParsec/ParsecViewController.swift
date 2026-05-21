@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 import ParsecSDK
 
 
@@ -23,6 +24,9 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 	var isPinching = false
 	var zoomEnabled = false
 	var lastLongPressPoint : CGPoint = CGPoint()
+	var isDoubleTapDragging: Bool = false
+	var isLongPressActive: Bool = false
+	var lastSingleTapTime: Date = .distantPast
 	var accumulatedDeltaX: Float = 0.0
 	var accumulatedDeltaY: Float = 0.0
 	var lastPanLocation: CGPoint = .zero
@@ -170,6 +174,8 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		scrollView.maximumZoomScale = 5.0
 		scrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
 		scrollView.panGestureRecognizer.minimumNumberOfTouches = 2
+		scrollView.delaysContentTouches = false
+		scrollView.canCancelContentTouches = false
         /*
          We set minimumNumberOfTouches to 2 for the scroll view's pan gesture
          so that 1-finger drags are passed through to our custom gesture recognizers
@@ -251,6 +257,11 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		longPressGestureRecognizer.numberOfTouchesRequired = 1
 		longPressGestureRecognizer.allowedTouchTypes = [0, 2]
 		view.addGestureRecognizer(longPressGestureRecognizer)
+
+		// Anchor + drag: one finger holds; another taps and drags.
+		let anchorDragRecognizer = AnchorDragGestureRecognizer(target: self, action: #selector(handleAnchorDrag(_:)))
+		anchorDragRecognizer.delegate = self
+		view.addGestureRecognizer(anchorDragRecognizer)
 		
 		NotificationCenter.default.addObserver(
 			self,
@@ -258,11 +269,18 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 			name: UIResponder.keyboardWillShowNotification,
 			object: nil
 		)
-		
+
 		NotificationCenter.default.addObserver(
 			self,
 			selector: #selector(keyboardWillHide),
 			name: UIResponder.keyboardWillHideNotification,
+			object: nil
+		)
+
+		NotificationCenter.default.addObserver(
+			self,
+			selector: #selector(keyboardDidShow),
+			name: UIResponder.keyboardDidShowNotification,
 			object: nil
 		)
 		
@@ -294,6 +312,7 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		if let parent = parent {
 			parent.setChildForHomeIndicatorAutoHidden(self)
 			parent.setChildViewControllerForPointerLock(self)
+			parent.setNeedsUpdateOfHomeIndicatorAutoHidden()
 		}
 		if keyboardVisible {
 			becomeFirstResponder()
@@ -309,6 +328,7 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 		}
 		NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillShowNotification, object: nil)
 		NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillHideNotification, object: nil)
+		NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardDidShowNotification, object: nil)
 	}
 	
 	
@@ -329,6 +349,8 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
 	}
 	
 	@objc func keyboardWillShow(notification: NSNotification) {
+		parent?.setNeedsUpdateOfHomeIndicatorAutoHidden()
+		setNeedsUpdateOfHomeIndicatorAutoHidden()
 		if let keyboardFrame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue {
             let height = keyboardFrame.height
 			keyboardHeight = height
@@ -350,6 +372,11 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate {
             }
 		}
 		onKeyboardVisibilityChanged?(true)
+	}
+
+	@objc func keyboardDidShow(notification: NSNotification) {
+		parent?.setNeedsUpdateOfHomeIndicatorAutoHidden()
+		setNeedsUpdateOfHomeIndicatorAutoHidden()
 	}
 
 	@objc func keyboardWillHide(notification: NSNotification) {
@@ -397,7 +424,7 @@ extension ParsecViewController : UIGestureRecognizerDelegate {
 				accumulatedDeltaY = 0.0
 				lastPanTranslation = .zero
 
-				if SettingsHandler.cursorMode == .direct {
+				if SettingsHandler.cursorMode == .direct && !isDoubleTapDragging {
 					let button = ParsecMouseButton.init(rawValue: 1)
 					CParsec.sendMouseClickMessage(button, false)
 				}
@@ -406,22 +433,21 @@ extension ParsecViewController : UIGestureRecognizerDelegate {
             // Native UIScrollView handles 2-finger pan for scrolling.
             // We disable the mouse wheel for now to avoid conflict, or we can check gesture state.
             // If user wants wheel, we might need a specific mode or 3 fingers.
+			if isDoubleTapDragging {
+				return
+			}
 			if zoomEnabled {
 				return
 			}
 			activatedPanFingerNumber = 2
-			let velocity = gestureRecognizer.velocity(in: gestureRecognizer.view)
-			
-			if abs(velocity.y) > 2 {
-				// Run your function when the user uses two fingers and swipes upwards
-				CParsec.sendWheelMsg(x: 0, y: Int32(Float(velocity.y) / 20 * mouseSensitivity))
-				return
-			}
 			if SettingsHandler.cursorMode == .direct {
 				let location = gestureRecognizer.location(in:gestureRecognizer.view)
 				touchController.onTouch(typeOfTap: 1, location: location, state: gestureRecognizer.state)
 			}
 		} else if activatedPanFingerNumber == 1 || (gestureRecognizer.numberOfTouches == 1 && activatedPanFingerNumber == 0) {
+			if isDoubleTapDragging {
+				return
+			}
 			activatedPanFingerNumber = 1
 			// move mouse
 			if SettingsHandler.cursorMode == .direct {
@@ -461,7 +487,7 @@ extension ParsecViewController : UIGestureRecognizerDelegate {
 				}
 			}
 
-			if gestureRecognizer.state == .began && SettingsHandler.cursorMode == .direct {
+			if gestureRecognizer.state == .began && SettingsHandler.cursorMode == .direct && !isDoubleTapDragging {
 				let button = ParsecMouseButton.init(rawValue: 1)
 				CParsec.sendMouseClickMessage(button, true)
 			}
@@ -470,7 +496,11 @@ extension ParsecViewController : UIGestureRecognizerDelegate {
 	}
 	
 	@objc func handleSingleFingerTap(_ gestureRecognizer: UITapGestureRecognizer) {
-		
+		let now = Date()
+		if now.timeIntervalSince(lastSingleTapTime) < 0.1 {
+			return
+		}
+		lastSingleTapTime = now
 		let location = gestureRecognizer.location(in:gestureRecognizer.view)
 		let adjustedLocation = contentView.convert(location, from: view)
 		touchController.onTap(typeOfTap: 1, location: adjustedLocation)
@@ -502,14 +532,21 @@ extension ParsecViewController : UIGestureRecognizerDelegate {
 		if SettingsHandler.cursorMode != .touchpad {
 			return
 		}
+		if isDoubleTapDragging {
+			return
+		}
 		let button = ParsecMouseButton.init(rawValue: 1)
 
 		if gestureRecognizer.state == .began{
+			isLongPressActive = true
 			CParsec.sendMouseClickMessage(button, true)
 			let location = gestureRecognizer.location(in: gestureRecognizer.view)
 			lastLongPressPoint = contentView.convert(location, from: view)
-		} else if gestureRecognizer.state == .ended {
-			CParsec.sendMouseClickMessage(button, false)
+		} else if gestureRecognizer.state == .ended || gestureRecognizer.state == .cancelled || gestureRecognizer.state == .failed {
+			if isLongPressActive {
+				isLongPressActive = false
+				CParsec.sendMouseClickMessage(button, false)
+			}
 		} else if gestureRecognizer.state == .changed {
 			let newLocation = gestureRecognizer.location(in: gestureRecognizer.view)
             let adjustedNewLocation = contentView.convert(newLocation, from: view)
@@ -520,7 +557,45 @@ extension ParsecViewController : UIGestureRecognizerDelegate {
 			lastLongPressPoint = adjustedNewLocation
 		}
 	}
-	
+
+	@objc func handleAnchorDrag(_ recognizer: AnchorDragGestureRecognizer) {
+		let button = ParsecMouseButton.init(rawValue: 1)
+		switch recognizer.state {
+		case .began:
+			isDoubleTapDragging = true
+			if !isLongPressActive {
+				if let drag = recognizer.dragTouch, SettingsHandler.cursorMode == .direct {
+					let loc = drag.location(in: view)
+					let adjusted = contentView.convert(loc, from: view)
+					CParsec.sendMousePosition(Int32(adjusted.x), Int32(adjusted.y))
+				}
+				CParsec.sendMouseClickMessage(button, true)
+			}
+		case .changed:
+			if let drag = recognizer.dragTouch {
+				let loc = drag.location(in: view)
+				let prev = drag.previousLocation(in: view)
+				if SettingsHandler.cursorMode == .direct {
+					let adjusted = contentView.convert(loc, from: view)
+					CParsec.sendMousePosition(Int32(adjusted.x), Int32(adjusted.y))
+				} else {
+					let dx = Int32(Float(loc.x - prev.x) * mouseSensitivity)
+					let dy = Int32(Float(loc.y - prev.y) * mouseSensitivity)
+					if dx != 0 || dy != 0 {
+						CParsec.sendMouseDelta(dx, dy)
+					}
+				}
+			}
+		case .ended, .cancelled, .failed:
+			isDoubleTapDragging = false
+			if !isLongPressActive {
+				CParsec.sendMouseClickMessage(button, false)
+			}
+		default:
+			break
+		}
+	}
+
     // UIScrollViewDelegate
 	func viewForZooming(in scrollView: UIScrollView) -> UIView? {
 		return contentView
@@ -559,30 +634,45 @@ class KeyboardButton: UIButton {
 	let keyText: String
 	let isToggleable: Bool
 	var isOn = false
-	
+	private var repeatTimer: Timer?
+	private var initialDelayTimer: Timer?
+
 	required init(keyText: String, isToggleable: Bool) {
 		self.keyText = keyText
 		self.isToggleable = isToggleable
 		super.init(frame: .zero)
 		addTarget(self, action: #selector(handleTouchDown), for: .touchDown)
 		addTarget(self, action: #selector(handleTouchUp), for: [.touchUpInside, .touchDragExit, .touchCancel])
-			
+
 	}
-	
+
 	required init?(coder: NSCoder) {
 		fatalError("init(coder:) has not been implemented")
 	}
-	
-	// Add a press-down animation for feedback
+
 	@objc private func handleTouchDown() {
 		self.alpha = 0.5
+		guard !isToggleable else { return }
+		let keyText = self.keyText
+		let initial = Timer(timeInterval: 0.5, repeats: false) { [weak self] _ in
+			let repeating = Timer(timeInterval: 0.075, repeats: true) { _ in
+				CParsec.sendVirtualKeyboardInput(text: keyText)
+			}
+			RunLoop.main.add(repeating, forMode: .common)
+			self?.repeatTimer = repeating
+		}
+		RunLoop.main.add(initial, forMode: .common)
+		initialDelayTimer = initial
 	}
-	
-	// Restore to normal state when touch ends
+
 	@objc private func handleTouchUp() {
 		UIView.animate(withDuration: 0.2) {
 			self.alpha = 1.0
 		}
+		initialDelayTimer?.invalidate()
+		initialDelayTimer = nil
+		repeatTimer?.invalidate()
+		repeatTimer = nil
 	}
 }
 
@@ -597,8 +687,33 @@ extension ParsecViewController : UIKeyInput, UITextInputTraits {
 			return .asciiCapable
 		}
 		set {
-			
+
 		}
+	}
+
+	var autocorrectionType: UITextAutocorrectionType {
+		get { return .no }
+		set { }
+	}
+
+	var spellCheckingType: UITextSpellCheckingType {
+		get { return .no }
+		set { }
+	}
+
+	var smartQuotesType: UITextSmartQuotesType {
+		get { return .no }
+		set { }
+	}
+
+	var smartDashesType: UITextSmartDashesType {
+		get { return .no }
+		set { }
+	}
+
+	var smartInsertDeleteType: UITextSmartInsertDeleteType {
+		get { return .no }
+		set { }
 	}
 	
 	override var canBecomeFirstResponder: Bool {
@@ -607,6 +722,8 @@ extension ParsecViewController : UIKeyInput, UITextInputTraits {
 
 	func insertText(_ text: String) {
 		CParsec.sendVirtualKeyboardInput(text: text)
+		parent?.setNeedsUpdateOfHomeIndicatorAutoHidden()
+		setNeedsUpdateOfHomeIndicatorAutoHidden()
 	}
 
 	func deleteBackward() {
@@ -778,5 +895,71 @@ extension ParsecViewController : UIKeyInput, UITextInputTraits {
 			resignFirstResponder()
 		}
 	}
-	
+
+}
+
+class AnchorDragGestureRecognizer: UIGestureRecognizer {
+	var anchorTouch: UITouch?
+	var dragTouch: UITouch?
+	private var anchorStartTime: TimeInterval = 0
+	private let anchorHoldThreshold: TimeInterval = 0.03
+
+	override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool {
+		return false
+	}
+
+	override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool {
+		return false
+	}
+
+	override func reset() {
+		super.reset()
+		anchorTouch = nil
+		dragTouch = nil
+		anchorStartTime = 0
+	}
+
+	override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+		super.touchesBegan(touches, with: event)
+		for touch in touches {
+			if anchorTouch == nil {
+				anchorTouch = touch
+				anchorStartTime = touch.timestamp
+			} else if dragTouch == nil {
+				let elapsed = touch.timestamp - anchorStartTime
+				if elapsed >= anchorHoldThreshold {
+					dragTouch = touch
+					state = .began
+				}
+			}
+		}
+	}
+
+	override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+		super.touchesMoved(touches, with: event)
+		if state == .began || state == .changed {
+			if let drag = dragTouch, touches.contains(drag) {
+				state = .changed
+			}
+		}
+	}
+
+	override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+		super.touchesEnded(touches, with: event)
+		for touch in touches {
+			if touch == dragTouch || touch == anchorTouch {
+				if state == .began || state == .changed {
+					state = .ended
+				} else {
+					state = .failed
+				}
+				return
+			}
+		}
+	}
+
+	override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+		super.touchesCancelled(touches, with: event)
+		state = .cancelled
+	}
 }

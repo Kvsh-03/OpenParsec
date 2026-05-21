@@ -460,7 +460,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_ASSET_PATHS = "\"OpenParsec/Preview Content\"";
-				DEVELOPMENT_TEAM = 3C3YHUUV75;
+				DEVELOPMENT_TEAM = 8UN5K2326N;
 				ENABLE_PREVIEWS = YES;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
 				INFOPLIST_FILE = OpenParsec/Info.plist;
@@ -469,7 +469,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.aigch.OpenParsec;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kushjain.OpenParsec;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "OpenParsec/OpenParsec-Bridging-Header.h";
@@ -491,7 +491,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_ASSET_PATHS = "\"OpenParsec/Preview Content\"";
-				DEVELOPMENT_TEAM = 3C3YHUUV75;
+				DEVELOPMENT_TEAM = 8UN5K2326N;
 				ENABLE_PREVIEWS = YES;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
 				INFOPLIST_FILE = OpenParsec/Info.plist;
@@ -500,7 +500,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.aigch.OpenParsec;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kushjain.OpenParsec;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "OpenParsec/OpenParsec-Bridging-Header.h";
